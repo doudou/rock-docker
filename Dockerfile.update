@@ -1,0 +1,5 @@
+FROM <%= username %>/debian-boostrap<%= dev_mode %>
+
+USER rock
+WORKDIR /home/rock/dev
+RUN source env.sh ; autoproj cache /home/rock/cache

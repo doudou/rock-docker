@@ -1,0 +1,12 @@
+FROM <%= image_name %>
+RUN apt-get update
+RUN apt-get install -y ruby wget sudo
+RUN useradd rock -G sudo
+RUN mkdir -p /home/rock/dev
+RUN chown rock:rock -R /home/rock
+RUN echo "rock ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/rock
+
+USER rock
+WORKDIR /home/rock/dev
+COPY autoproj_bootstrap<%= dev_mode %> autoproj_bootstrap
+RUN AUTOPROJ_OSDEPS_MODE=all AUTOPROJ_BOOTSTRAP_IGNORE_NONEMPTY_DIR=1 <%= ruby %> autoproj_bootstrap --no-color --no-progress git git://gitorious.org/rock/buildconf.git
