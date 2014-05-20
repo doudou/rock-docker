@@ -212,11 +212,11 @@ module Autoproj
                         end
                     end
                 end
-
-
+                
+                sudo = Autobuild.tool_in_path('sudo')
                 Tempfile.open('osdeps_sh') do |io|
                     io.puts "#! /bin/bash"
-                    io.puts GAIN_ROOT_ACCESS
+                    io.puts GAIN_ROOT_ACCESS % [sudo]
                     io.write script
                     io.flush
                     Autobuild::Subprocess.run 'autoproj', 'osdeps', '/bin/bash', io.path
@@ -226,7 +226,7 @@ module Autoproj
             GAIN_ROOT_ACCESS = <<-EOSCRIPT
 # Gain root access using sudo
 if test `id -u` != "0"; then
-    exec sudo /bin/bash $0 "$@"
+    exec %s /bin/bash $0 "$@"
 
 fi
             EOSCRIPT
@@ -335,6 +335,15 @@ fi
                 super(['emerge'], true,
                         "emerge '%s'",
                         "emerge --noreplace '%s'")
+            end
+        end
+
+        #Package manger for OpenSuse and Suse (untested)
+        class ZypperManager < ShellScriptManager
+            def initialize
+                super(['zypper'], true,
+                        "zypper -n install '%s'",
+                        "zypper -n install '%s'")
             end
         end
 
@@ -513,10 +522,18 @@ fi
                 end
             end
 
+            def reinstall
+                base_cmdline = [Autobuild.tool_in_path('ruby'), '-S', Autobuild.tool('gem')]
+                Autobuild::Subprocess.run 'autoproj', 'osdeps', 'reinstall', *base_cmdline,
+                    'clean'
+                Autobuild::Subprocess.run 'autoproj', 'osdeps', 'reinstall', *base_cmdline,
+                    'pristine', '--all', '--extensions'
+            end
+
             def install(gems)
                 guess_gem_program
 
-                base_cmdline = [Autobuild.tool('gem'), 'install']
+                base_cmdline = [Autobuild.tool_in_path('ruby'), '-S', Autobuild.tool('gem'), 'install']
                 if !GemManager.with_doc
                     base_cmdline << '--no-rdoc' << '--no-ri'
                 end
@@ -791,6 +808,14 @@ fi
             "ruby#{RUBY_VERSION.split('.')[0, 2].join("")}"
         end
 
+        def self.autodetect_ruby_program
+            ruby = RbConfig::CONFIG['RUBY_INSTALL_NAME']
+            ruby_bindir = RbConfig::CONFIG['bindir']
+            ruby_executable = File.join(ruby_bindir, ruby)
+            Autobuild.programs['ruby'] = ruby_executable
+            ruby_executable
+        end
+
         def self.autodetect_ruby
             self.alias(ruby_version_keyword, "ruby")
         end
@@ -814,6 +839,7 @@ fi
             PackageManagers::PacmanManager,
             PackageManagers::YumManager,
             PackageManagers::PortManager,
+            PackageManagers::ZypperManager,
             PackageManagers::PipManager]
         OS_PACKAGE_HANDLERS = {
             'debian' => 'apt-dpkg',
@@ -821,7 +847,8 @@ fi
             'arch' => 'pacman',
             'manjarolinux' => 'pacman',
             'fedora' => 'yum',
-            'darwin' => 'port'
+            'darwin' => 'port',
+            'opensuse' => 'zypper'
         }
 
         # The information contained in the OSdeps files, as a hash
@@ -1012,6 +1039,8 @@ fi
                         @operating_system = [[lsb_name, "debian"], lsb_versions]
                     elsif lsb_name != 'arch' && File.exists?("/etc/arch-release")
                         @operating_system = [[lsb_name, "arch"], lsb_versions]
+                    elsif lsb_name != 'opensuse' && File.exists?("/etc/SuSE-release")
+                        @operating_system = [[lsb_name, "opensuse"], lsb_versions]
                     elsif lsb_name != 'debian'
                         # Debian unstable cannot be detected with lsb_release,
                         # so debian has its own detection logic
@@ -1049,6 +1078,11 @@ fi
                         [['darwin'], [version.strip]]
                     elsif Autobuild.windows?
                         [['windows'], []]
+                    elsif File.exists?('/etc/SuSE-release')
+                        version = File.read('/etc/SuSE-release').strip
+                        version =~/.*VERSION\s+=\s+([^\s]+)/
+                        version = $1
+                        [['opensuse'], [version.strip]]
                     end
             end
 
@@ -1590,8 +1624,18 @@ So, what do you want ? (all, none or a comma-separated list of: os gem pip)
         # The set of packages that have already been installed
         attr_reader :installed_packages
 
-        # Requests the installation of the given set of packages
-        def install(packages, options = Hash.new)
+        # Set up the registered package handlers according to the specified osdeps mode
+        #
+        # It enables/disables package handlers based on either the value
+        # returned by {#osdeps_mode} or the value passed as option (the latter
+        # takes precedence). Moreover, sets the handler's silent flag using
+        # {#silent?}
+        #
+        # @option options [Array<String>] the package handlers that should be
+        #   enabled. The default value is returned by {#osdeps_mode}
+        # @return [Array<PackageManagers::Manager>] the set of enabled package
+        #   managers
+        def setup_package_handlers(options = Hash.new)
             options =
                 if Kernel.respond_to?(:validate_options)
                     Kernel.validate_options options, :osdeps_mode => osdeps_mode
@@ -1619,9 +1663,25 @@ So, what do you want ? (all, none or a comma-separated list of: os gem pip)
                 v.silent = self.silent?
             end
 
+            enabled_handlers = []
+            if os_package_handler.enabled?
+                enabled_handlers << os_package_handler
+            end
+            package_handlers.each_value do |v|
+                if v.enabled?
+                    enabled_handlers << v
+                end
+            end
+            enabled_handlers
+        end
+
+        # Requests the installation of the given set of packages
+        def install(packages, options = Hash.new)
             # Remove the set of packages that have already been installed 
             packages = packages.to_set - installed_packages
             return false if packages.empty?
+
+            setup_package_handlers(options)
 
             packages = resolve_os_dependencies(packages)
             packages = packages.map do |handler, list|
@@ -1650,8 +1710,85 @@ So, what do you want ? (all, none or a comma-separated list of: os gem pip)
 end
 
 
+module Autobuild
+    class << self
+	# Configure the programs used by different packages
+        attr_reader :programs
+	# A cache of entries in programs to their resolved full path 
+        #
+        # @return [{String=>[String,String,String]}] the triplet (full path,
+        #   tool name, value of ENV['PATH']). The last two values are used to
+        #   invalidate the cache when needed
+        #
+        # @see tool_in_path
+        attr_reader :programs_in_path
+
+        # Get a given program, using its name as default value. For
+	# instance
+	#   tool('automake') 
+	# will return 'automake' unless the autobuild script defined
+	# another automake program in Autobuild.programs by doing
+	#   Autobuild.programs['automake'] = 'automake1.9'
+        def tool(name)
+            programs[name.to_sym] || programs[name.to_s] || name.to_s
+        end
+
+        # Resolves the absolute path to a given tool
+        def tool_in_path(name)
+            path, path_name, path_env = programs_in_path[name]
+            current = tool(name)
+            if path_env != ENV['PATH'] || path_name != current
+                # Delete the current entry given that it is invalid
+                programs_in_path.delete(name)
+                if current[0, 1] == "/"
+                    # This is already a full path
+                    path = current
+                else
+                    path = ENV['PATH'].split(':').
+                        find { |dir| File.exists?(File.join(dir, current)) }
+                    if path
+                        path = File.join(path, current)
+                    end
+                end
+
+                if !path
+                    raise ArgumentError, "tool #{name}, set to #{current}, can not be found in PATH=#{path_env}"
+                end
+
+                # Verify that the new value is a file and is executable
+                if !File.file?(path)
+                    raise ArgumentError, "tool #{name} is set to #{current}, but this resolves to #{path} which is not a file"
+                elsif !File.executable?(path)
+                    raise ArgumentError, "tool #{name} is set to #{current}, but this resolves to #{path} which is not executable"
+                end
+                programs_in_path[name] = [path, current, ENV['PATH']]
+            end
+
+            return path
+        end
+    end
+
+    @programs = Hash.new
+    @programs_in_path = Hash.new
+end
+
+
 module Autoproj
     class InputError < RuntimeError; end
+
+    class << self
+        # Programatically overriden autoproj options
+        #
+        # @see override_option
+        attr_reader :option_overrides
+    end
+    @option_overrides = Hash.new
+
+    # Programatically override a user-selected option without changing the
+    # configuration file
+    def self.override_option(option_name, value)
+        @option_overrides[option_name] = value
+    end
 
     class BuildOption
         attr_reader :name
@@ -1953,7 +2090,7 @@ module Autoproj
 
     # Run the provided command as root, using sudo to gain root access
     def self.run_as_root(*args)
-        if !system('sudo', *args)
+        if !system(Autobuild.tool_in_path('sudo'), *args)
             raise "failed to run #{args.join(" ")} as root"
         end
     end
@@ -2152,13 +2289,28 @@ ruby19:
   - ruby19
   - rake
   default: nonexistent
-ruby20: ignore
+  opensuse: ruby19-devel
+ruby20:
+  debian:
+  - ruby2.0
+  - ruby2.0-dev
+  - rake
+  - rubygems-integration
+  default: ignore
+ruby21:
+  debian:
+  - ruby2.1
+  - ruby2.1-dev
+  - rake
+  - rubygems-integration
+  default: ignore
 build-essential:
   debian,ubuntu: build-essential
   gentoo: ignore
   arch,manjarolinux: base-dev
   fedora: ignore
   darwin: ignore
+  opensuse: ignore
 autobuild: gem
 autoproj: gem
 git:
@@ -2170,24 +2322,28 @@ git:
   arch,manjarolinux: git
   fedora: git
   darwin: git-core
+  opensuse: git
 hg:
   debian,ubuntu: mercurial
   gentoo: dev-vcs/mercurial
   arch,manjarolinux: mercurial
   fedora: mercurial
   darwin: mercurial
+  opensuse: mercurial
 svn:
   debian,ubuntu: subversion
   gentoo: dev-util/subversion
   arch,manjarolinux: subversion
   fedora: subversion
   darwin: subversion
+  opensuse: subversion
 cmake:
   debian,ubuntu: cmake
   gentoo: dev-util/cmake
   arch,manjarolinux: cmake
   fedora: cmake
   darwin: cmake
+  opensuse: cmake
 autotools:
   debian,ubuntu:
   - automake1.9
@@ -2204,12 +2360,16 @@ autotools:
   darwin:
   - automake
   - autoconf
+  opensuse:
+  - automake
+  - autoconf
 lsb_release:
   debian,ubuntu: lsb-release
   gentoo: sys-apps/lsb-release
   arch,manjarolinux: lsb-release
   fedora: redhat-lsb
   darwin: ignore
+  opensuse: ignore
 archive:
   debian,ubuntu:
   - tar
@@ -2226,14 +2386,19 @@ archive:
   darwin:
   - gnutar
   - unzip
+  opensuse:
+  - tar
+  - unzip
 cvs:
   debian,ubuntu: cvs
   fedora: cvs
   darwin: cvs
   arch,manjarolinux: cvs
+  opensuse: cvs
 pip:
   debian,ubuntu: python-pip
   arch,manjarolinux: python2-pip
+  opensuse: python-pip
 
 EODEFS
 
@@ -2246,6 +2411,7 @@ ENV['AUTOPROJ_OSDEPS_MODE'] = osdeps_mode
 # binary) by setting Autobuild.programs['gem'] to nil
 Autobuild.programs['gem'] = nil
 Autoproj::OSDependencies.autodetect_ruby
+Autoproj::OSDependencies.autodetect_ruby_program
 
 osdeps_management = 
     if ENV['AUTOPROJ_DEFAULT_OSDEPS']
