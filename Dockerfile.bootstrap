@@ -18,4 +18,4 @@ ADD ressources/autoproj_bootstrap-dev /home/rock/dev/autoproj_bootstrap
 <% else %>
 ADD ressources/autoproj_bootstrap /home/rock/dev/autoproj_bootstrap
 <% end %>
-RUN AUTOPROJ_OSDEPS_MODE=all AUTOPROJ_BOOTSTRAP_IGNORE_NONEMPTY_DIR=1 <%= ruby[1] %> autoproj_bootstrap --no-color --no-progress git git://gitorious.org/rock/buildconf.git
+RUN AUTOPROJ_OSDEPS_MODE=all AUTOPROJ_BOOTSTRAP_IGNORE_NONEMPTY_DIR=1 <%= ruby[1] %> autoproj_bootstrap <%= dev_mode ? 'dev' : '' %> --no-color --no-progress git git://gitorious.org/rock/buildconf.git
