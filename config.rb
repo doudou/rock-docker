@@ -33,7 +33,11 @@ image 'ubuntu' do
 end
 
 image 'opensuse' do
-    docker_image 'andtecheu/opensuse_13.1'
+    tag '13.1' do
+        docker_name 'sylvainjoyeux/opensuse-13.1'
+        docker_tag_name 'latest'
+    end
+
     config 'dev_mode' do
         add true
     end
