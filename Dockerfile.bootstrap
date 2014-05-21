@@ -12,6 +12,7 @@ RUN chown rock:rock -R /home/rock
 RUN echo "rock ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/rock
 
 USER rock
+ENV HOME /home/rock
 WORKDIR /home/rock/dev
 <% if dev_mode %>
 ADD ressources/autoproj_bootstrap-dev /home/rock/dev/autoproj_bootstrap
