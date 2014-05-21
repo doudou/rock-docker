@@ -52,6 +52,19 @@ image 'opensuse' do
     config 'package_manager' do
         add ['true', 'zypper --non-interactive install %s'], metadata: nil
     end
+end
+
+image 'arch' do
+    docker_name 'base/archlinux'
+    config 'dev_mode' do
+        add true
+    end
+    config 'ruby' do
+        add ['ruby19', '/usr/bin/ruby1.9'], metadata: '1.9'
+        add ['ruby20', '/usr/bin/ruby2.0'], metadata: '2.0'
+    end
+    config 'package_manager' do
+        add ['true', 'zypper --non-interactive install %s'], metadata: nil
     end
 end
 
