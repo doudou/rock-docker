@@ -53,20 +53,12 @@ end
 # Environment is clean, so just mark it as so unconditionally
 ENV['AUTOPROJ_BOOTSTRAP_IGNORE_NONEMPTY_DIR'] = '1'
 
-needed_gem_home = ENV['AUTOPROJ_GEM_HOME'] || "#{Dir.pwd}/.gems"
-if $LOADED_FEATURES.find { |str| str =~ /bygems/ }
-    if ENV['GEM_HOME'] != needed_gem_home
-        require 'rbconfig'
-        RUBY = RbConfig::CONFIG['RUBY_INSTALL_NAME']
+gem_home = ENV['AUTOPROJ_GEM_HOME'] || File.join(Dir.pwd, '.gems')
+gem_path = ([gem_home] + Gem.default_path).join(":")
+Gem.paths = Hash['GEM_HOME' => gem_home, 'GEM_PATH' => gem_path]
 
-        ENV['GEM_HOME'] = needed_gem_home
-        ENV['GEM_PATH'] = nil
-        exec RUBY, __FILE__, *ARGV
-    end
-end
-
-
-ENV['GEM_HOME'] = needed_gem_home
+ENV['GEM_HOME'] = gem_home
+ENV['GEM_PATH'] = gem_path
 ENV['PATH']     = "#{ENV['GEM_HOME']}/bin:#{ENV['PATH']}"
 
 require 'yaml'
@@ -243,14 +235,16 @@ fi
                     needs_locking, user_install_cmd, auto_install_cmd
             end
 
-            def generate_user_os_script(os_packages)
+            def generate_user_os_script(os_packages, options = Hash.new)
+                user_install_cmd = options[:user_install_cmd] || self.user_install_cmd
                 if user_install_cmd
                     (user_install_cmd % [os_packages.join("' '")])
                 else generate_auto_os_script(os_packages)
                 end
             end
 
-            def generate_auto_os_script(os_packages)
+            def generate_auto_os_script(os_packages, options = Hash.new)
+                auto_install_cmd = options[:auto_install_cmd] || self.auto_install_cmd
                 (auto_install_cmd % [os_packages.join("' '")])
             end
 
@@ -288,11 +282,11 @@ fi
                 false
             end
 
-            def install(packages)
+            def install(packages, options = Hash.new)
                 handled_os = OSDependencies.supported_operating_system?
                 if handled_os
-                    shell_script = generate_auto_os_script(packages)
-                    user_shell_script = generate_user_os_script(packages)
+                    shell_script = generate_auto_os_script(packages, options)
+                    user_shell_script = generate_user_os_script(packages, options)
                 end
                 if osdeps_interaction(packages, user_shell_script)
                     Autoproj.message "  installing OS packages: #{packages.sort.join(", ")}"
@@ -342,8 +336,27 @@ fi
         class ZypperManager < ShellScriptManager
             def initialize
                 super(['zypper'], true,
-                        "zypper -n install '%s'",
+                        "zypper install '%s'",
                         "zypper -n install '%s'")
+            end
+
+            def install(packages)
+                patterns, packages = packages.partition { |pkg| pkg =~ /^@/ }
+                patterns = patterns.map { |str| str[1..-1] }
+                result = false
+                if !patterns.empty?
+                    result |= super(patterns,
+                                    :auto_install_cmd => "zypper --non-interactive install --type pattern '%s'",
+                                    :user_install_cmd => "zypper install --type pattern '%s'")
+                end
+                if !packages.empty?
+                    result |= super(packages)
+                end
+                if result
+                    # Invalidate caching of installed packages, as we just
+                    # installed new packages !
+                    @installed_packages = nil
+                end
             end
         end
 
@@ -479,9 +492,7 @@ fi
                 Autobuild.env_add_path 'PATH', "#{gem_home}/bin"
 
                 # Now, reset the directories in our own RubyGems instance
-                if Gem::Specification.respond_to?(:dirs=)
-                    Gem::Specification.dirs = ENV['GEM_PATH'].split(':')
-                end
+                Gem.paths = ENV
             end
 
             # Return the directory in which RubyGems package should be installed
@@ -533,7 +544,7 @@ fi
             def install(gems)
                 guess_gem_program
 
-                base_cmdline = [Autobuild.tool_in_path('ruby'), '-S', Autobuild.tool('gem'), 'install']
+                base_cmdline = [Autobuild.tool_in_path('ruby'), '-S', Autobuild.tool('gem'), 'install', '--no-format-executable']
                 if !GemManager.with_doc
                     base_cmdline << '--no-rdoc' << '--no-ri'
                 end
@@ -2296,6 +2307,7 @@ ruby20:
   - ruby2.0-dev
   - rake
   - rubygems-integration
+  opensuse: ruby20-devel
   default: ignore
 ruby21:
   debian:
@@ -2310,7 +2322,9 @@ build-essential:
   arch,manjarolinux: base-dev
   fedora: ignore
   darwin: ignore
-  opensuse: ignore
+  opensuse:
+  - ! '@devel_C_C++'
+  - gcc-c++
 autobuild: gem
 autoproj: gem
 git:
@@ -2369,7 +2383,7 @@ lsb_release:
   arch,manjarolinux: lsb-release
   fedora: redhat-lsb
   darwin: ignore
-  opensuse: ignore
+  opensuse: lsb-release
 archive:
   debian,ubuntu:
   - tar
@@ -2448,8 +2462,8 @@ end
 File.open('env.sh', 'w') do |io|
     io.write <<-EOSHELL
 export RUBYOPT=-rubygems
-export GEM_PATH=#{needed_gem_home}:$GEM_PATH
-export GEM_HOME=#{needed_gem_home}
+export GEM_PATH=#{gem_path}
+export GEM_HOME=#{gem_home}
 export PATH=$GEM_HOME/bin:$PATH
     EOSHELL
 end
