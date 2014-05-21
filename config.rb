@@ -52,7 +52,9 @@ image 'opensuse' do
 end
 
 
-build 'bootstrap'
+build 'bootstrap' do |image|
+    image.metadata['dev_mode'] || image.metadata['ruby'][0] !~ /ruby2/
+end
 # build 'update', :on => debian.
 #     with('tag' => 'unstable',
 #          'ruby' => ['ruby1.9.1', '/usr/bin/ruby1.9.1'])
