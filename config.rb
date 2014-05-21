@@ -13,7 +13,10 @@ image 'debian' do
         add ['apt-get update', 'apt-get install -y %s'], metadata: nil
     end
     tag 'unstable'
-    tag 'testing'
+    ## There is a problem with the testing/jessie images on the docker index
+    # tag 'testing' do
+    #     docker_tag_name 'jessie'
+    # end
 end
 
 image 'ubuntu' do
@@ -24,6 +27,7 @@ image 'ubuntu' do
 
     config 'ruby' do
         add ['ruby1.9.1', '/usr/bin/ruby1.9.1'], metadata: '1.9'
+    end
 
     config 'package_manager' do
         add ['apt-get update', 'apt-get install -y %s'], metadata: nil
