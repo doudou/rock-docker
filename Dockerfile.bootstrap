@@ -1,4 +1,8 @@
-FROM <%= image.name %>:<%= image.tag_name %>
+<% if image.docker_tag_name.empty? %>
+FROM <%= image.docker_name %>
+<% else %>
+FROM <%= image.docker_name %>:<%= image.docker_tag_name %>
+<% end %>
 RUN apt-get update
 RUN apt-get install -y <%= ruby[0] %> sudo
 RUN useradd rock -G sudo
