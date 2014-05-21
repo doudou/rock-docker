@@ -9,6 +9,9 @@ image 'debian' do
         add ['ruby2.0', '/usr/bin/ruby2.0']
         add ['ruby2.1', '/usr/bin/ruby2.1']
     end
+    config 'package_manager' do
+        add ['apt-get update', 'apt-get install -y %s'], metadata: nil
+    end
     tag 'unstable'
     tag 'testing'
 end
@@ -21,6 +24,9 @@ image 'ubuntu' do
 
     config 'ruby' do
         add ['ruby1.9.1', '/usr/bin/ruby1.9.1']
+
+    config 'package_manager' do
+        add ['apt-get update', 'apt-get install -y %s'], metadata: nil
     end
 
     tag '14.04'
@@ -33,6 +39,9 @@ image 'opensuse' do
     end
     config 'ruby' do
         add ['ruby1.9.1', '/usr/bin/ruby1.9.1']
+    config 'package_manager' do
+        add ['true', 'zypper --non-interactive install %s'], metadata: nil
+    end
     end
 end
 
