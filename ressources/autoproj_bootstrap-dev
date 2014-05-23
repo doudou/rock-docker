@@ -74,6 +74,9 @@ module Autoproj
         string
     end
 
+    def self.warn(str, *args)
+        STDERR.puts "WARN #{str}"
+    end
     def self.message(str)
         STDERR.puts "  #{str}"
     end
@@ -82,6 +85,14 @@ end
 module Autobuild
     def self.do_update
         true
+    end
+    def self.message(str)
+        STDERR.puts "  #{str}"
+    end
+    def self.progress(key, str)
+        STDERR.puts "  #{str}"
+    end
+    def self.progress_done(key)
     end
     def self.message(str)
         STDERR.puts "  #{str}"
@@ -317,8 +328,8 @@ fi
         class PacmanManager < ShellScriptManager
             def initialize
                 super(['pacman'], true,
-                        "pacman '%s'",
-                        "pacman -Sy --noconfirm '%s'")
+                        "pacman -Sy --needed '%s'",
+                        "pacman -Sy --needed --noconfirm '%s'")
             end
         end
 
@@ -390,6 +401,25 @@ fi
                     end
                 end
                 new_packages
+            end
+
+            def install(packages)
+                patterns, packages = packages.partition { |pkg| pkg =~ /^@/ }
+                patterns = patterns.map { |str| str[1..-1] }
+                result = false
+                if !patterns.empty?
+                    result |= super(patterns,
+                                    :auto_install_cmd => "yum groupinstall -y '%s'",
+                                    :user_install_cmd => "yum groupinstall '%s'")
+                end
+                if !packages.empty?
+                    result |= super(packages)
+                end
+                if result
+                    # Invalidate caching of installed packages, as we just
+                    # installed new packages !
+                    @installed_packages = nil
+                end
             end
         end
 
@@ -471,15 +501,15 @@ fi
             # of GEM_PATH
             def self.initialize_environment
                 Autobuild::ORIGINAL_ENV['GEM_PATH'] =
-                    (ENV['GEM_PATH'] || "").split(":").find_all do |p|
+                    (ENV['GEM_PATH'] || "").split(File::PATH_SEPARATOR).find_all do |p|
                         !Autoproj.in_autoproj_installation?(p)
-                    end.join(":")
+                    end.join(File::PATH_SEPARATOR)
                 Autobuild.env_inherit 'GEM_PATH'
                 Autobuild.env_init_from_env 'GEM_PATH'
 
-                orig_gem_path = Autobuild::ORIGINAL_ENV['GEM_PATH'].split(':')
+                orig_gem_path = Autobuild::ORIGINAL_ENV['GEM_PATH'].split(File::PATH_SEPARATOR)
                 Autobuild::SYSTEM_ENV['GEM_PATH'] = Gem.default_path
-                Autobuild::ORIGINAL_ENV['GEM_PATH'] = orig_gem_path.join(":")
+                Autobuild::ORIGINAL_ENV['GEM_PATH'] = orig_gem_path.join(File::PATH_SEPARATOR)
 
                 Autoproj.manifest.each_reused_autoproj_installation do |p|
                     p_gems = File.join(Autoproj.root_dir, '.gems')
@@ -498,6 +528,15 @@ fi
             # Return the directory in which RubyGems package should be installed
             def self.gem_home
                 ENV['AUTOPROJ_GEM_HOME'] || File.join(Autoproj.root_dir, ".gems")
+            end
+            
+            # Returns the set of default options that are added to gem
+            #
+            # By default, we add --no-user-install to un-break distributions
+            # like Arch that set --user-install by default (thus disabling the
+            # role of GEM_HOME)
+            def self.default_install_options
+                @default_install_options ||= ['--no-user-install', '--no-format-executable']
             end
 
             def initialize
@@ -544,7 +583,7 @@ fi
             def install(gems)
                 guess_gem_program
 
-                base_cmdline = [Autobuild.tool_in_path('ruby'), '-S', Autobuild.tool('gem'), 'install', '--no-format-executable']
+                base_cmdline = [Autobuild.tool_in_path('ruby'), '-S', Autobuild.tool('gem'), 'install', *GemManager.default_install_options]
                 if !GemManager.with_doc
                     base_cmdline << '--no-rdoc' << '--no-ri'
                 end
@@ -659,7 +698,7 @@ fi
         
           #{cmdlines.map { |c| c.join(" ") }.join("\n      ")}
         
-        Autoproj expects these Gems to be installed in #{Autoproj.gem_home} This can
+        Autoproj expects these Gems to be installed in #{GemManager.gem_home} This can
         be overridden by setting the AUTOPROJ_GEM_HOME environment variable manually
 
                 EOMSG
@@ -743,7 +782,7 @@ fi
         
           #{cmdlines.map { |c| c.join(" ") }.join("\n      ")}
         
-        Autoproj expects these Python packages to be installed in #{Autoproj.pip_home} This can
+        Autoproj expects these Python packages to be installed in #{PipManager.pip_home} This can
         be overridden by setting the AUTOPROJ_PYTHONUSERBASE environment variable manually
 
                 EOMSG
@@ -856,7 +895,6 @@ fi
             'debian' => 'apt-dpkg',
             'gentoo' => 'emerge',
             'arch' => 'pacman',
-            'manjarolinux' => 'pacman',
             'fedora' => 'yum',
             'darwin' => 'port',
             'opensuse' => 'zypper'
@@ -997,6 +1035,68 @@ fi
             @operating_system = values
         end
 
+        def self.guess_operating_system
+            if File.exists?('/etc/debian_version')
+                versions = [File.read('/etc/debian_version').strip]
+                if versions.first =~ /sid/
+                    versions = ["unstable", "sid"]
+                end
+                [['debian'], versions]
+            elsif File.exists?('/etc/redhat-release')
+                release_string = File.read('/etc/redhat-release').strip
+                release_string =~ /(.*) release ([\d.]+)/
+                name = $1.downcase
+                version = $2
+                if name =~ /Red Hat Entreprise/
+                    name = 'rhel'
+                end
+                [[name], [version]]
+            elsif File.exists?('/etc/gentoo-release')
+                release_string = File.read('/etc/gentoo-release').strip
+                release_string =~ /^.*([^\s]+)$/
+                version = $1
+                [['gentoo'], [version]]
+            elsif File.exists?('/etc/arch-release')
+                [['arch'], []]
+            elsif Autobuild.macos? 
+                version=`sw_vers | head -2 | tail -1`.split(":")[1]
+                [['darwin'], [version.strip]]
+            elsif Autobuild.windows?
+                [['windows'], []]
+            elsif File.exists?('/etc/SuSE-release')
+                version = File.read('/etc/SuSE-release').strip
+                version =~/.*VERSION\s+=\s+([^\s]+)/
+                version = $1
+                [['opensuse'], [version.strip]]
+            end
+        end
+
+        def self.ensure_derivatives_refer_to_their_parents(names)
+            names = names.dup
+            version_files = Hash[
+                '/etc/debian_version' => 'debian',
+                '/etc/redhat-release' => 'fedora',
+                '/etc/gentoo-release' => 'gentoo',
+                '/etc/arch-release' => 'arch',
+                '/etc/SuSE-release' => 'opensuse']
+            version_files.each do |file, name|
+                if File.exists?(file) && !names.include?(name)
+                    names << name
+                end
+            end
+            names
+        end
+        
+        def self.normalize_os_representation(names, versions)
+            # Normalize the names to lowercase
+            names    = names.map(&:downcase)
+            versions = versions.map(&:downcase)
+            if !versions.include?('default')
+                versions += ['default']
+            end
+            return names, versions
+        end
+
         # Autodetects the operating system name and version
         #
         # +osname+ is the operating system name, all in lowercase (e.g. ubuntu,
@@ -1020,107 +1120,72 @@ fi
 
             if options[:force]
                 @operating_system = nil
-            else
-                if !@operating_system.nil?
-                    return @operating_system
-                elsif Autoproj.has_config_key?('operating_system') && !(user_os = ENV['AUTOPROJ_OS'])
-                    os = Autoproj.user_config('operating_system')
-                    if os.respond_to?(:to_ary)
-                        if os[0].respond_to?(:to_ary) && os[0].all? { |s| s.respond_to?(:to_str) } &&
-                           os[1].respond_to?(:to_ary) && os[1].all? { |s| s.respond_to?(:to_str) }
-                           @operating_system = os
-                           return os
-                        end
-                    end
-                end
-            end
-
-            if user_os = ENV['AUTOPROJ_OS']
-                if user_os.empty?
-                    @operating_system = false
-                else
-                    names, versions = user_os.split(':')
-                    @operating_system = [names.split(','), versions.split(',')]
-                end
-            else
-                Autoproj.message "  autodetecting the operating system"
-                lsb_name, lsb_versions = os_from_lsb
-                if lsb_name
-                    if lsb_name != 'debian' && File.exists?("/etc/debian_version")
-                        @operating_system = [[lsb_name, "debian"], lsb_versions]
-                    elsif lsb_name != 'arch' && File.exists?("/etc/arch-release")
-                        @operating_system = [[lsb_name, "arch"], lsb_versions]
-                    elsif lsb_name != 'opensuse' && File.exists?("/etc/SuSE-release")
-                        @operating_system = [[lsb_name, "opensuse"], lsb_versions]
-                    elsif lsb_name != 'debian'
-                        # Debian unstable cannot be detected with lsb_release,
-                        # so debian has its own detection logic
-                        @operating_system = [[lsb_name], lsb_versions]
-                    end
-                end
-            end
-
-            if @operating_system.nil?
-                # Need to do some heuristics unfortunately
+            elsif !@operating_system.nil? # @operating_system can be set to false to simulate an unknown OS
+                return @operating_system
+            elsif user_os = ENV['AUTOPROJ_OS']
                 @operating_system =
-                    if File.exists?('/etc/debian_version')
-                        versions = [File.read('/etc/debian_version').strip]
-                        if versions.first =~ /sid/
-                            versions = ["unstable", "sid"]
-                        end
-                        if lsb_versions
-                            lsb_versions.each { |v| versions << v if !versions.include?(v) }
-                        end
-                        [['debian'], versions]
-                    elsif File.exists?('/etc/fedora-release')
-                        release_string = File.read('/etc/fedora-release').strip
-                        release_string =~ /Fedora release (\d+)/
-                        version = $1
-                        [['fedora'], [version]]
-                    elsif File.exists?('/etc/gentoo-release')
-                        release_string = File.read('/etc/gentoo-release').strip
-                        release_string =~ /^.*([^\s]+)$/
-                            version = $1
-                        [['gentoo'], [version]]
-                    elsif File.exists?('/etc/arch-release')
-                        [['arch'], []]
-                    elsif Autobuild.macos? 
-                        version=`sw_vers | head -2 | tail -1`.split(":")[1]
-                        [['darwin'], [version.strip]]
-                    elsif Autobuild.windows?
-                        [['windows'], []]
-                    elsif File.exists?('/etc/SuSE-release')
-                        version = File.read('/etc/SuSE-release').strip
-                        version =~/.*VERSION\s+=\s+([^\s]+)/
-                        version = $1
-                        [['opensuse'], [version.strip]]
+                    if user_os.empty? then false
+                    else
+                        names, versions = user_os.split(':')
+                        normalize_os_representation(names.split(','), versions.split(','))
                     end
+                return @operating_system
+            elsif Autoproj.has_config_key?('operating_system')
+                os = Autoproj.user_config('operating_system')
+                if os.respond_to?(:to_ary)
+                    if os[0].respond_to?(:to_ary) && os[0].all? { |s| s.respond_to?(:to_str) } &&
+                       os[1].respond_to?(:to_ary) && os[1].all? { |s| s.respond_to?(:to_str) }
+                       @operating_system = os
+                       return os
+                    end
+                end
+                @operating_system = nil # Invalid OS format in the configuration file
             end
 
-            if !@operating_system
-                return
-            end
+            Autobuild.progress :operating_system_autodetection, "autodetecting the operating system"
+            names, versions = os_from_os_release
 
-            # Normalize the names to lowercase
-            names, versions = @operating_system[0], @operating_system[1]
-            names    = names.map(&:downcase)
-            versions = versions.map(&:downcase)
-            if !versions.include?('default')
-                versions += ['default']
+            # Don't use the os-release information on Debian, since they
+            # refuse to put enough information to detect 'unstable'
+            # reliably. So, we use the heuristic method for it
+            if !names || names[0] == 'debian'
+                names, versions = guess_operating_system
             end
+            return if !names
+
+            names = ensure_derivatives_refer_to_their_parents(names)
+            names, versions = normalize_os_representation(names, versions)
 
             @operating_system = [names, versions]
             Autoproj.change_option('operating_system', @operating_system, true)
+            Autobuild.progress :operating_system_autodetection, "operating system: #{(names - ['default']).join(",")} - #{(versions - ['default']).join(",")}"
             @operating_system
+        ensure
+            Autobuild.progress_done :operating_system_autodetection
+        end
+
+        def self.os_from_os_release(filename = '/etc/os-release')
+            return if !File.exists?(filename)
+
+            fields = Hash.new
+            File.readlines(filename).each do |line|
+                if line.strip =~ /^(\w+)=(?:["'])?([^"']+)(?:["'])?$/
+                    fields[$1] = $2
+                else Autoproj.warn "error parsing /etc/os-release, line: #{line.inspect}"
+                end
+            end
+
+            names = []
+            versions = []
+            names << fields['ID'] << fields['ID_LIKE']
+            versions << fields['VERSION_ID']
+            version = fields['VERSION'] || ''
+            versions.concat(version.gsub(/[^\w.]/, ' ').split(' '))
+            return names.compact.uniq, versions.compact.uniq
         end
 
         def self.os_from_lsb
-            has_lsb_release = nil
-            begin
-                has_lsb_release = `which lsb_release`
-                return unless $?.success?
-            rescue Exception => e
-                #seems which is not installes (e.g. on windows)
+            if !Autobuild.find_in_path('lsb_release')
                 return
             end
 
@@ -1744,6 +1809,14 @@ module Autobuild
             programs[name.to_sym] || programs[name.to_s] || name.to_s
         end
 
+        def find_in_path(file)
+            path = ENV['PATH'].split(File::PATH_SEPARATOR).
+                find { |dir| File.exists?(File.join(dir, file)) }
+            if path
+                return File.join(path, file)
+            end
+        end
+
         # Resolves the absolute path to a given tool
         def tool_in_path(name)
             path, path_name, path_env = programs_in_path[name]
@@ -1755,11 +1828,7 @@ module Autobuild
                     # This is already a full path
                     path = current
                 else
-                    path = ENV['PATH'].split(':').
-                        find { |dir| File.exists?(File.join(dir, current)) }
-                    if path
-                        path = File.join(path, current)
-                    end
+                    path = find_in_path(current)
                 end
 
                 if !path
@@ -2117,16 +2186,6 @@ module Autoproj
         Autobuild.env_inherit(*names)
     end
 
-    # Find the given program in PATH. It raises ArgumentError if the program
-    # can't be found
-    def self.find_in_path(name)
-        result = ENV['PATH'].split(':').find { |dir| File.file?(File.join(dir, name)) }
-        if !result
-            raise ArgumentError, "#{name} can not be found in PATH (#{ENV['PATH']})"
-        end
-        File.join(result, name)
-    end
-
     # @deprecated use isolate_environment instead
     def self.set_initial_env
         isolate_environment
@@ -2254,25 +2313,6 @@ end
 DEFS = <<EODEFS
 ---
 none: ignore
-ruby18:
-  debian,ubuntu:
-  - ruby1.8-dev
-  - ruby1.8
-  - rubygems1.8
-  - ri1.8
-  - libopenssl-ruby1.8
-  - rake
-  gentoo:
-  - dev-lang/ruby:1.8
-  - rake
-  fedora:
-    '15,16':
-    - ruby
-    - rubygems
-  darwin:
-  - ruby
-  - rb-rake
-  default: nonexistent
 ruby19:
   debian:
   - ruby1.9.1
@@ -2281,17 +2321,24 @@ ruby19:
   - rake
   - rubygems-integration
   ubuntu:
-  - ruby1.9.1
-  - ruby1.9.1-dev
-  - rubygems1.9.1
-  - ri1.9.1
-  - libopenssl-ruby1.9.1
-  - rake
+    '12.04':
+    - ruby1.9.1
+    - ruby1.9.1-dev
+    - rubygems1.9.1
+    - ri1.9.1
+    - libopenssl-ruby1.9.1
+    - rake
+    default:
+    - ruby1.9.1
+    - ruby1.9.1-dev
+    - rubygems1.9.1
+    - ri1.9.1
+    - libopenssl-ruby1.9.1
+    - rake
+    - rubygems-integration
   gentoo:
   - dev-lang/ruby:1.9
   - rake
-  arch,manjarolinux:
-  - ruby
   fedora:
     '17':
     - ruby
@@ -2299,28 +2346,40 @@ ruby19:
   darwin:
   - ruby19
   - rake
-  default: nonexistent
   opensuse: ruby19-devel
+  arch: ignore
+  default: nonexistent
 ruby20:
   debian:
   - ruby2.0
   - ruby2.0-dev
   - rake
   - rubygems-integration
+  fedora:
+    '20':
+    - ruby
+    - ruby-devel
+    - rubygem-rake
   opensuse: ruby20-devel
-  default: ignore
+  arch: ignore
+  default: nonexistent
 ruby21:
   debian:
   - ruby2.1
   - ruby2.1-dev
   - rake
   - rubygems-integration
-  default: ignore
+  arch: ignore
+  fedora: ruby-devel
+  default: nonexistent
 build-essential:
   debian,ubuntu: build-essential
   gentoo: ignore
-  arch,manjarolinux: base-dev
-  fedora: ignore
+  arch: base-devel
+  fedora:
+  - gcc-c++
+  - make
+  - glibc-devel
   darwin: ignore
   opensuse:
   - ! '@devel_C_C++'
@@ -2333,28 +2392,28 @@ git:
     default: git-core
   ubuntu: git-core
   gentoo: dev-vcs/git
-  arch,manjarolinux: git
+  arch: git
   fedora: git
   darwin: git-core
   opensuse: git
 hg:
   debian,ubuntu: mercurial
   gentoo: dev-vcs/mercurial
-  arch,manjarolinux: mercurial
+  arch: mercurial
   fedora: mercurial
   darwin: mercurial
   opensuse: mercurial
 svn:
   debian,ubuntu: subversion
   gentoo: dev-util/subversion
-  arch,manjarolinux: subversion
+  arch: subversion
   fedora: subversion
   darwin: subversion
   opensuse: subversion
 cmake:
   debian,ubuntu: cmake
   gentoo: dev-util/cmake
-  arch,manjarolinux: cmake
+  arch: cmake
   fedora: cmake
   darwin: cmake
   opensuse: cmake
@@ -2365,7 +2424,7 @@ autotools:
   gentoo:
   - sys-devel/automake:1.9
   - sys-devel/autoconf
-  arch,manjarolinux:
+  arch:
   - automake
   - autoconf
   fedora:
@@ -2377,13 +2436,6 @@ autotools:
   opensuse:
   - automake
   - autoconf
-lsb_release:
-  debian,ubuntu: lsb-release
-  gentoo: sys-apps/lsb-release
-  arch,manjarolinux: lsb-release
-  fedora: redhat-lsb
-  darwin: ignore
-  opensuse: lsb-release
 archive:
   debian,ubuntu:
   - tar
@@ -2391,7 +2443,7 @@ archive:
   gentoo:
   - app-arch/tar
   - app-arch/unzip
-  arch,manjarolinux:
+  arch:
   - tar
   - unzip
   fedora:
@@ -2407,12 +2459,13 @@ cvs:
   debian,ubuntu: cvs
   fedora: cvs
   darwin: cvs
-  arch,manjarolinux: cvs
+  arch: cvs
   opensuse: cvs
 pip:
   debian,ubuntu: python-pip
-  arch,manjarolinux: python2-pip
+  arch: python2-pip
   opensuse: python-pip
+  fedora: python-pip
 
 EODEFS
 
@@ -2444,16 +2497,15 @@ rescue Autoproj::ConfigError => e
 end
 
 # Now try to find out the name of the gem binary
-PACKAGES      = %w{lsb_release}
-
-ENV['RUBYOPT']  = "-rubygems"
-require 'rubygems'
+PACKAGES      = []
 
 STDERR.puts "autoproj: installing autoproj and its dependencies (this can take a long time)"
 # First install the dependencies of autoproj, as we don't want them to be
 # affected by the prerelease flag
 begin
-    osdeps_management.install(PACKAGES)
+    if !PACKAGES.empty?
+        osdeps_management.install(PACKAGES)
+    end
 rescue Autoproj::ConfigError => e
     STDERR.puts "failed: #{e.message}"
     exit(1)
