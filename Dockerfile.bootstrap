@@ -8,11 +8,15 @@ RUN <%= package_manager[1] % [ruby[0]] %>
 RUN <%= package_manager[1] % ['sudo'] %>
 RUN groupadd rock 
 RUN useradd -m -g rock -G rock,users rock
-RUN echo "rock ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/rock
+RUN echo "rock ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/rock ; chmod 0440 /etc/sudoers.d/rock
+RUN echo "Defaults !requiretty" >> /etc/sudoers.d/rock
+
+# There is a weird bug in docker (or aufs ?). Running mkdir after USER sometimes
+# sets the ownership of the directory to root:root
+RUN mkdir /home/rock/dev ; chown rock:rock /home/rock/dev
 
 USER rock
 ENV HOME /home/rock
-RUN mkdir /home/rock/dev
 WORKDIR /home/rock/dev
 <% if dev_mode %>
 ADD ressources/autoproj_bootstrap-dev /home/rock/dev/autoproj_bootstrap
