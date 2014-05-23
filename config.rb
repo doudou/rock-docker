@@ -70,7 +70,7 @@ end
 
 
 build 'bootstrap' do |image|
-    image.metadata['dev_mode'] || image.metadata['ruby'][0] !~ /ruby2/
+    image.metadata['dev_mode'] || (image.metadata['ruby'] == '1.9')
 end
 # build 'update', :on => debian.
 #     with('tag' => 'unstable',
