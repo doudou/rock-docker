@@ -1,8 +1,23 @@
-<% if image.docker_tag_name.empty? %>
-FROM <%= image.docker_name %>
-<% else %>
-FROM <%= image.docker_name %>:<%= image.docker_tag_name %>
+FROM <%= source_image_id %>
+
+### Cache setup for Debian images
+# We have to remvoe the lock file since it goes into the shared directory
+# and could therefore become 'stale'
+RUN rm -f /var/cache/apt/archives/lock
+# The docker Debian images remote all files in /var/cache/apt/archives
+# We don't want that as we are actually caching in a shared volume to
+# avoid re-downloading
+RUN rm -f /etc/apt/apt.conf.d/docker-clean /etc/apt/apt.conf.d/no-cache
+### END setup for Debian images
+
+### Cache setup for OpenSUSE images
+# Caching the downloaded RPMs is not done by default on OpenSUSE. Enable it, we
+# are mounting the relevant directory into a shared volume
+<% if image.name == 'opensuse' %>
+RUN echo "keeppackages=1" >> /etc/zypp/repos.d/openSUSE_13.1_OSS.repo
+RUN echo "keeppackages=1" >> /etc/zypp/repos.d/openSUSE_13.1_Updates.repo
 <% end %>
+
 RUN <%= package_manager[0] %>
 RUN <%= package_manager[1] % [ruby[0]] %>
 RUN <%= package_manager[1] % ['sudo'] %>

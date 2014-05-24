@@ -1,5 +1,6 @@
 username 'rock'
 image 'debian' do
+    volume_from 'rock_cache_apt'
     config 'dev_mode' do
         add true
         add false
@@ -20,11 +21,11 @@ image 'debian' do
 end
 
 image 'ubuntu' do
+    volume_from 'rock_cache_apt'
     config 'dev_mode' do
         add true
         add false
     end
-
 
     config 'package_manager' do
         add ['apt-get update', 'apt-get install -y %s'], metadata: nil
@@ -60,6 +61,8 @@ image 'ubuntu' do
 end
 
 image 'opensuse' do
+    volume_from 'rock_cache_zypper'
+
     tag '13.1' do
         docker_name 'sylvainjoyeux/opensuse-13.1'
         docker_tag_name 'latest'
@@ -78,6 +81,8 @@ image 'opensuse' do
 end
 
 image 'arch' do
+    volume_from 'rock_cache_pacman'
+
     docker_name 'base/archlinux'
     config 'dev_mode' do
         add true
@@ -91,6 +96,8 @@ image 'arch' do
 end
 
 image 'fedora' do
+    volume_from 'rock_cache_yum'
+
     config 'dev_mode' do
         add true
     end
@@ -103,9 +110,3 @@ image 'fedora' do
     tag '20'
 end
 
-build 'bootstrap' do |image|
-    image.metadata['dev_mode'] || (image.metadata['ruby'] == '1.9')
-end
-# build 'update', :on => debian.
-#     with('tag' => 'unstable',
-#          'ruby' => ['ruby1.9.1', '/usr/bin/ruby1.9.1'])
