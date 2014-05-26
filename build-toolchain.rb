@@ -9,7 +9,7 @@ each_image do |img|
     end
 end
 
-build 'build' do
+build 'build-toolchain' do
     from_build 'bootstrap', ignore: 'autoproj_config'
     filter { |image| image.metadata['dev_mode'] }
 end
