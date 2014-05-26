@@ -1,5 +1,8 @@
 FROM <%= source_image_id %>
 
+USER root
+RUN chown rock:rock -R /home/rock
+
 USER rock
 WORKDIR /home/rock/dev
 ENV AUTOBUILD_CACHE_DIR /home/rock/cache
