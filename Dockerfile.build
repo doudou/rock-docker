@@ -1,0 +1,7 @@
+FROM <%= source_image_id %>
+
+USER rock
+WORKDIR /home/rock/dev
+ENV AUTOBUILD_CACHE_DIR /home/rock/cache
+ADD ressources/<%= autoproj_config %>.yml /home/rock/dev/autoproj/config.yml
+RUN /bin/bash -c "source env.sh ; autoproj full-build"
