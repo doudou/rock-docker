@@ -1,6 +1,6 @@
 load 'common'
-build 'bootstrap' do |image|
-    image.metadata['dev_mode'] || (image.metadata['ruby'] == '1.9')
+build 'bootstrap' do
+    filter { |image| image.metadata['dev_mode'] || (image.metadata['ruby'] == '1.9') }
 end
 
 # build 'update', :on => debian.
