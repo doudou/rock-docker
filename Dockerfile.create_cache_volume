@@ -1,0 +1,12 @@
+FROM debian:unstable
+
+RUN apt-get update
+RUN apt-get install -y wget
+RUN groupadd rock 
+RUN useradd -m -g rock -G rock,users rock
+USER rock
+# Docker is weird when it comes to permissions of volumes (#2360)
+#   All volumes are assigned to root (thus set go+w
+#   Permissions are cleared if the directory is empty (thus create an empty file)
+RUN mkdir /home/rock/cache ; touch /home/rock/cache/.docker-volume-perm-fix ; chmod -R go+w /home/rock/cache
+

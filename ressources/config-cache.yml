@@ -1,0 +1,16 @@
+---
+osdeps_mode: os,gem,pip
+reused_autoproj_installations: []
+manifest_source:
+  type: git
+  url: git://gitorious.org/rock/buildconf-all.git
+GITORIOUS: git
+GITORIOUS_ROOT: git://gitorious.org
+GITORIOUS_PUSH_ROOT: ! 'git@gitorious.org:'
+GITHUB: git
+GITHUB_ROOT: git://github.com
+GITHUB_PUSH_ROOT: ! 'git@github.com:'
+ROCK_FLAVOR: master
+USE_OCL: false
+rtt_target: gnulinux
+rtt_corba_implementation: omniorb
