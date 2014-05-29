@@ -1,7 +1,7 @@
 #! /usr/bin/ruby
 
-if RUBY_VERSION < "1.8.7"
-    STDERR.puts "autoproj requires Ruby >= 1.8.7"
+if RUBY_VERSION < "1.9.3"
+    STDERR.puts "autoproj requires Ruby >= 1.9.3"
     exit 1
 end
 
@@ -126,6 +126,7 @@ module Autobuild
 end
 
 require 'tempfile'
+require 'json'
 module Autoproj
     # Module that contains the package manager implementations for the
     # OSDependencies class
@@ -133,7 +134,12 @@ module Autoproj
         # Base class for all package managers. Subclasses must add the
         # #install(packages) method and may add the
         # #filter_uptodate_packages(packages) method
+        #
+        # Package managers must be registered in PACKAGE_HANDLERS and
+        # (if applicable) OS_PACKAGE_HANDLERS.
         class Manager
+            # @return [Array<String>] the various names this package manager is
+            #   known about
             attr_reader :names
 
             attr_writer :enabled
@@ -142,12 +148,18 @@ module Autoproj
             attr_writer :silent
             def silent?; !!@silent end
 
+            # Create a package manager registered with various names
+            #
+            # @param [Array<String>] names the package manager names. It MUST be
+            #   different from the OS names that autoproj uses. See the comment
+            #   for OS_PACKAGE_HANDLERS for an explanation
             def initialize(names = [])
                 @names = names.dup
                 @enabled = true
                 @silent = true
             end
 
+            # The primary name for this package manager
             def name
                 names.first
             end
@@ -201,7 +213,7 @@ module Autoproj
         # Base class for all package managers that simply require the call of a
         # shell script to install packages (e.g. yum, apt, ...)
         class ShellScriptManager < Manager
-            def self.execute_as_root(script, with_locking)
+            def self.execute(script, with_locking, with_root)
                 if with_locking
                     File.open('/tmp/autoproj_osdeps_lock', 'w') do |lock_io|
                         begin
@@ -209,7 +221,7 @@ module Autoproj
                                 Autoproj.message "  waiting for other autoproj instances to finish their osdeps installation"
                                 sleep 5
                             end
-                            return execute_as_root(script, false)
+                            return execute(script, false,with_root)
                         ensure
                             lock_io.flock(File::LOCK_UN)
                         end
@@ -219,7 +231,7 @@ module Autoproj
                 sudo = Autobuild.tool_in_path('sudo')
                 Tempfile.open('osdeps_sh') do |io|
                     io.puts "#! /bin/bash"
-                    io.puts GAIN_ROOT_ACCESS % [sudo]
+                    io.puts GAIN_ROOT_ACCESS % [sudo] if with_root
                     io.write script
                     io.flush
                     Autobuild::Subprocess.run 'autoproj', 'osdeps', '/bin/bash', io.path
@@ -234,18 +246,78 @@ if test `id -u` != "0"; then
 fi
             EOSCRIPT
 
+            # Overrides the {#needs_locking?} flag
             attr_writer :needs_locking
+            # Whether two autoproj instances can run this package manager at the
+            # same time
+            #
+            # This declares if this package manager cannot be used concurrently.
+            # If it is the case, autoproj will ensure that there is no two
+            # autoproj instances running this package manager at the same time
+            # 
+            # @return [Boolean]
+            # @see needs_locking=
             def needs_locking?; !!@needs_locking end
 
+            # Overrides the {#needs_root?} flag
+            attr_writer :needs_root
+            # Whether this package manager needs root access.
+            #
+            # This declares if the command line(s) for this package manager
+            # should be started as root. Root access is provided using sudo
+            # 
+            # @return [Boolean]
+            # @see needs_root=
+            def needs_root?; !!@needs_root end
+
+            # Command line used by autoproj to install packages
+            #
+            # Since it is to be used for automated install by autoproj, it
+            # should not require any interaction with the user. When generating
+            # the command line, the %s slot is replaced by the quoted package
+            # name(s).
+            #
+            # @return [String] a command line pattern that allows to install
+            #   packages without user interaction. It is used when a package
+            #   should be installed by autoproj automatically
             attr_reader :auto_install_cmd
+            # Command line displayed to the user to install packages
+            #
+            # When generating the command line, the %s slot is replaced by the
+            # quoted package name(s).
+            #
+            # @return [String] a command line pattern that allows to install
+            #   packages with user interaction. It is displayed to the
+            #   user when it chose to not let autoproj install packages for this
+            #   package manager automatically
             attr_reader :user_install_cmd
 
-            def initialize(names, needs_locking, user_install_cmd, auto_install_cmd)
+            # @param [Array<String>] names the package managers names, see
+            #   {#names}
+            # @param [Boolean] needs_locking whether this package manager can be
+            #   started by two separate autoproj instances at the same time. See
+            #   {#needs_locking?}
+            # @param [String] user_install_cmd the user-visible command line. See
+            #   {#user_install_cmd}
+            # @param [String] auto_install_cmd the command line used by autoproj
+            #   itself, see {#auto_install_cmd}.
+            # @param [Boolean] needs_root if the command lines should be started
+            #   as root or not. See {#needs_root?}
+            def initialize(names, needs_locking, user_install_cmd, auto_install_cmd,needs_root=true)
                 super(names)
-                @needs_locking, @user_install_cmd, @auto_install_cmd =
-                    needs_locking, user_install_cmd, auto_install_cmd
+                @needs_locking, @user_install_cmd, @auto_install_cmd,@needs_root =
+                    needs_locking, user_install_cmd, auto_install_cmd, needs_root
             end
 
+            # Generate the shell script that would allow the user to install
+            # the given packages
+            #
+            # @param [Array<String>] os_packages the name of the packages to be
+            #   installed
+            # @option options [String] :user_install_cmd (#user_install_cmd) the
+            #   command-line pattern that should be used to generate the script.
+            #   If given, it overrides the default value stored in
+            #   {#user_install_cmd]
             def generate_user_os_script(os_packages, options = Hash.new)
                 user_install_cmd = options[:user_install_cmd] || self.user_install_cmd
                 if user_install_cmd
@@ -254,11 +326,28 @@ fi
                 end
             end
 
+            # Generate the shell script that should be executed by autoproj to
+            # install the given packages
+            #
+            # @param [Array<String>] os_packages the name of the packages to be
+            #   installed
+            # @option options [String] :auto_install_cmd (#auto_install_cmd) the
+            #   command-line pattern that should be used to generate the script.
+            #   If given, it overrides the default value stored in
+            #   {#auto_install_cmd]
             def generate_auto_os_script(os_packages, options = Hash.new)
                 auto_install_cmd = options[:auto_install_cmd] || self.auto_install_cmd
                 (auto_install_cmd % [os_packages.join("' '")])
             end
 
+            # Handles interaction with the user
+            #
+            # This method will verify whether the user required autoproj to
+            # install packages from this package manager automatically. It
+            # displays a relevant message if it is not the case.
+            #
+            # @return [Boolean] true if the packages should be installed
+            #   automatically, false otherwise
             def osdeps_interaction(os_packages, shell_script)
                 if OSDependencies.force_osdeps
                     return true
@@ -293,6 +382,17 @@ fi
                 false
             end
 
+            # Install packages using this package manager
+            #
+            # @param [Array<String>] packages the name of the packages that
+            #   should be installed
+            # @option options [String] :user_install_cmd (#user_install_cmd) the
+            #   command line that should be displayed to the user to install said
+            #   packages. See the option in {#generate_user_os_script}
+            # @option options [String] :auto_install_cmd (#auto_install_cmd) the
+            #   command line that should be used by autoproj to install said
+            #   packages. See the option in {#generate_auto_os_script}
+            # @return [Boolean] true if packages got installed, false otherwise
             def install(packages, options = Hash.new)
                 handled_os = OSDependencies.supported_operating_system?
                 if handled_os
@@ -306,7 +406,7 @@ fi
                         Autoproj.message "Generating installation script for non-ruby OS dependencies"
                         Autoproj.message shell_script
                     end
-                    ShellScriptManager.execute_as_root(shell_script, needs_locking?)
+                    ShellScriptManager.execute(shell_script, needs_locking?,needs_root?)
                     return true
                 end
                 false
@@ -317,9 +417,54 @@ fi
         # their package manager
         class PortManager < ShellScriptManager
             def initialize
-                super(['port'], true,
+                super(['macports'], true,
                         "port install '%s'",
                         "port install '%s'")
+            end
+        end
+
+        # Package manager interface for Mac OS using homebrew as
+        # its package manager
+        class HomebrewManager < ShellScriptManager
+            def initialize
+                super(['brew'], true,
+                        "brew install '%s'",
+                        "brew install '%s'",
+                        false)
+            end
+
+            def filter_uptodate_packages(packages)
+                # TODO there might be duplicates in packages which should be fixed
+                # somewhere else
+                packages = packages.uniq
+                result = `brew info --json=v1 '#{packages.join("' '")}'`
+                result = begin
+                             result = JSON.parse(result)
+                             if packages.size == 1
+                                 [result]
+                             else
+                                 result
+                             end
+                         rescue JSON::ParserError
+                             if result && !result.empty?
+                                 Autoproj.warn "Error while parsing result of brew info --json=v1"
+                             else
+                                 # one of the packages is unknown fallback to install all
+                                 # packaes which will complain about it
+                             end
+                             return packages
+                         end
+                # fall back if something else went wrong
+                if packages.size != result.size
+                    Autoproj.warn "brew info returns less or more packages when requested. Falling back to install all packages"
+                    return packages
+                end
+
+                new_packages = []
+                result.each do |pkg|
+                    new_packages << pkg["name"] if pkg["installed"].empty?
+                end
+                new_packages
             end
         end
 
@@ -428,6 +573,7 @@ fi
                     is_installed = false
                     dpkg_status.each do |line|
                         line = line.chomp
+                        line = line.encode( "UTF-8", "binary", :invalid => :replace, :undef => :replace)
                         if line == ""
                             if is_installed
                                 current_packages.each do |pkg|
@@ -620,7 +766,14 @@ fi
                         dep = Gem::Dependency.new(name, version_requirements)
                         available =
                             if gem_fetcher.respond_to?(:find_matching)
-                                gem_fetcher.find_matching(dep, true, true, GemManager.with_prerelease).map(&:first)
+                                non_prerelease = gem_fetcher.find_matching(dep, true, true).map(&:first)
+                                if GemManager.with_prerelease
+                                    prerelease = gem_fetcher.find_matching(dep, false, true, true).map(&:first)
+                                else prerelease = Array.new
+                                end
+                                (non_prerelease + prerelease).
+                                    map { |n, v, _| [n, v] }
+
                             else # Post RubyGems-2.0
                                 type = if GemManager.with_prerelease then :complete
                                        else :released
@@ -631,7 +784,7 @@ fi
                                 end.map { |tuple, _| [tuple.name, tuple.version] }
                             end
                         installed_version = installed.map(&:version).max
-                        available_version = available.map { |name, v| v }.max
+                        available_version = available.map { |_, v| v }.max
                         if !available_version
                             if version
                                 raise ConfigError.new, "cannot find any gem with the name '#{name}' and version #{version}"
@@ -867,17 +1020,30 @@ fi
             PackageManagers::GemManager,
             PackageManagers::EmergeManager,
             PackageManagers::PacmanManager,
-            PackageManagers::PacmanManager,
+            PackageManagers::HomebrewManager,
             PackageManagers::YumManager,
             PackageManagers::PortManager,
             PackageManagers::ZypperManager,
             PackageManagers::PipManager]
+        
+        # Mapping from OS name to package manager name
+        #
+        # Package handlers and OSes MUST have different names. The former are
+        # used to resolve packages and the latter to resolve OSes in the osdeps.
+        # Since one can force the use of a package manager in any OS by adding a
+        # package manager entry, as e.g.
+        #
+        # ubuntu:
+        #    homebrew: package
+        #
+        # we need to be able to separate between OS and package manager names.
         OS_PACKAGE_HANDLERS = {
             'debian' => 'apt-dpkg',
             'gentoo' => 'emerge',
             'arch' => 'pacman',
             'fedora' => 'yum',
-            'darwin' => 'port',
+            'macos-port' => 'macports',
+            'macos-brew' => 'brew',
             'opensuse' => 'zypper'
         }
 
@@ -1041,7 +1207,22 @@ fi
                 [['arch'], []]
             elsif Autobuild.macos? 
                 version=`sw_vers | head -2 | tail -1`.split(":")[1]
-                [['darwin'], [version.strip]]
+                manager =
+                    if ENV['AUTOPROJ_MACOSX_PACKAGE_MANAGER']
+                        ENV['AUTOPROJ_MACOSX_PACKAGE_MANAGER']
+                    else 'macos-brew'
+                    end
+                if !OS_PACKAGE_HANDLERS.include?(manager)
+                    known_managers = OS_PACKAGE_HANDLERS.keys.grep(/^macos/)
+                    raise ArgumentError, "#{manager} is not a known MacOSX package manager. Known package managers are #{known_managers.join(", ")}"
+                end
+
+                managers = 
+                    if manager == 'macos-port'
+                        [manager, 'port']
+                    else [manager]
+                    end
+                [[*managers, 'darwin'], [version.strip]]
             elsif Autobuild.windows?
                 [['windows'], []]
             elsif File.exists?('/etc/SuSE-release')
@@ -2111,6 +2292,17 @@ module Autoproj
         File.join(root_dir, "autoproj")
     end
 
+    # @deprecated use Autobuild.find_in_path instead
+    #
+    # Warning: the autobuild method returns nil (instead of raising) if the
+    # argument cannot be found
+    def self.find_in_path(name)
+        if path = Autobuild.find_in_path(name)
+            return path
+        else raise ArgumentError, "cannot find #{name} in PATH (#{ENV['PATH']})"
+        end
+    end
+
     class << self
         # The directory in which packages will be installed.
         #
@@ -2326,12 +2518,14 @@ ruby19:
     '17':
     - ruby
     - rubygems
-  darwin:
+  macos-port:
   - ruby19
   - rake
+  macos-brew:
+  - gem: rake
+  default: nonexistent
   opensuse: ruby19-devel
   arch: ignore
-  default: nonexistent
 ruby20:
   debian:
   - ruby2.0
@@ -2345,6 +2539,8 @@ ruby20:
     - rubygem-rake
   opensuse: ruby20-devel
   arch: ignore
+  macos-brew:
+  - gem: rake
   default: nonexistent
 ruby21:
   debian:
@@ -2354,6 +2550,8 @@ ruby21:
   - rubygems-integration
   arch: ignore
   fedora: ruby-devel
+  macos-brew:
+  - gem: rake
   default: nonexistent
 build-essential:
   debian,ubuntu: build-essential
@@ -2377,7 +2575,8 @@ git:
   gentoo: dev-vcs/git
   arch: git
   fedora: git
-  darwin: git-core
+  macos-port: git-core
+  macos-brew: git
   opensuse: git
 hg:
   debian,ubuntu: mercurial
@@ -2432,9 +2631,11 @@ archive:
   fedora:
   - tar
   - unzip
-  darwin:
+  macos-port:
   - gnutar
   - unzip
+  macos-brew:
+  - gnu-tar
   opensuse:
   - tar
   - unzip
@@ -2508,6 +2709,7 @@ end
 # run autoproj bootstrap manually.
 if ARGV.first != "localdev"
     if ARGV.first == "dev"
+        ENV['AUTOPROJ_USE_PRERELEASE'] = '1'
         Autoproj::PackageManagers::GemManager.with_prerelease = true
         ARGV.shift
     end
