@@ -4,6 +4,8 @@ USER root
 RUN rm -f /var/cache/apt/archives/lock
 RUN apt-get update
 RUN apt-get install -y wget
-USER rock
 ADD ressources/config-cache.yml /home/rock/dev/autoproj/config.yml
+RUN chown rock:rock -R /home/rock
+RUN chown rock:rock -R /tmp
+USER rock
 RUN /bin/sh -c ". ./env.sh ; autoproj cache /home/rock/cache"

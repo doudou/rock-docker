@@ -2,6 +2,7 @@ FROM <%= source_image_id %>
 
 USER root
 RUN chown rock:rock -R /home/rock
+RUN chown rock:rock -R /tmp
 
 USER rock
 WORKDIR /home/rock/dev
