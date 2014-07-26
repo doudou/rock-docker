@@ -1,8 +1,7 @@
 load 'common'
 build 'bootstrap' do
-    filter { |image| image.metadata['dev_mode'] || (image.metadata['ruby'] == '1.9') }
+    if ENV['UPDATE'] == '1'
+        from_build 'bootstrap'
+        dockerfile_template 'Dockerfile.bootstrap_update'
+    end
 end
-
-# build 'update', :on => debian.
-#     with('tag' => 'unstable',
-#          'ruby' => ['ruby1.9.1', '/usr/bin/ruby1.9.1'])

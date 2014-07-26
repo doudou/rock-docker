@@ -70,6 +70,7 @@ image 'opensuse' do
 
     config 'dev_mode' do
         add true
+        add false
     end
     config 'ruby' do
         add ['ruby19', '/usr/bin/ruby1.9'], metadata: '1.9'
@@ -86,6 +87,7 @@ image 'arch' do
     docker_name 'base/archlinux'
     config 'dev_mode' do
         add true
+        add false
     end
     config 'ruby' do
         add ['ruby', '/usr/bin/ruby'], metadata: '2.1'
@@ -100,6 +102,7 @@ image 'fedora' do
 
     config 'dev_mode' do
         add true
+        add false
     end
     config 'ruby' do
         add ['ruby', '/usr/bin/ruby'], metadata: '2.0'
